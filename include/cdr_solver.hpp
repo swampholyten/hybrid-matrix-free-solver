@@ -11,6 +11,7 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/numerics/vector_tools.h>
+#include <memory>
 
 #include "cdr_operator.hpp"
 #include "cdr_problem.hpp"
@@ -87,5 +88,87 @@ private:
   VectorType solution;
   VectorType system_rhs;
 
+  Multigrid multigrid;
   CycleTimings timings;
 };
+
+template <int dim, int fe_degree>
+CdrProblem<dim, fe_degree>::CdrProblem(const Parameters &parameters)
+    : parameters(parameters), coefficients(parameters.mu, parameters.gamma),
+      communicator(MPI_COMM_WORLD),
+      pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
+      timer(communicator, pcout, TimerOutput::never, TimerOutput::wall_times),
+      triangulation(communicator,
+                    Triangulation<dim>::limit_level_difference_at_vertices,
+                    parallel::distributed::Triangulation<
+                        dim>::construct_multigrid_hierarchy),
+      fe(fe_degree), dof_handler(triangulation) {}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::is_root() const -> bool {
+  return Utilities::MPI::this_mpi_process(communicator) == 0;
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::dirichlet_boundary_ids() const
+    -> std::set<types::boundary_id> {
+  std::set<types::boundary_id> ids;
+  for (const types::boundary_id id : triangulation.get_boundary_ids()) {
+    if (id != neumann_boundary_id) {
+      ids.insert(id);
+    }
+  }
+  return ids;
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::setup_system() -> void {
+  TimerOutput::Scope scope(timer, "setup");
+  Timer wall;
+
+  const bool use_multigrid =
+      parameters.preconditioner == PreconditionerType::Multigrid;
+
+  dof_handler.distribute_dofs(fe);
+  if (use_multigrid) {
+    dof_handler.distribute_mg_dofs();
+  }
+
+  constraints.clear();
+  constraints.reinit(dof_handler.locally_owned_dofs(),
+                     DoFTools::extract_locally_relevant_dofs(dof_handler));
+
+  DoFTools::make_hanging_node_constraints(dof_handler, constraints);
+  for (const types::boundary_id id : dirichlet_boundary_ids()) {
+    VectorTools::interpolate_boundary_values(mapping, dof_handler, id,
+                                             ExactSolution<dim>(), constraints);
+  }
+  constraints.close();
+
+  auto additional_data = matrix_free_data<dim, Number>(
+      update_gradients | update_JxW_values | update_quadrature_points);
+
+  additional_data.mapping_update_flags_boundary_faces =
+      update_values | update_JxW_values | update_quadrature_points |
+      update_normal_vectors;
+
+  auto matrix_free = std::make_shared<MatrixFree<dim, Number>>();
+  matrix_free->reinit(mapping, dof_handler, constraints,
+                      QGauss<1>(fe_degree + 1), additional_data);
+
+  system_matrix.initialize(matrix_free);
+  system_matrix.set_coefficients(coefficients);
+  system_matrix.initialize_dof_vector(solution);
+  system_matrix.initialize_dof_vector(system_rhs);
+
+  if (parameters.preconditioner == PreconditionerType::Jacobi) {
+    system_matrix.compute_diagonal();
+  }
+
+  if (use_multigrid) {
+    multigrid.build(dof_handler, mapping, coefficients,
+                    dirichlet_boundary_ids());
+  }
+
+  timings.setup = wall.wall_time();
+}
