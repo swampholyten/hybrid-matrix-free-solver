@@ -49,6 +49,9 @@ template <int dim, typename Number = double> struct Coefficients {
   Tensor<1, dim, Number> beta;
 };
 
+// Manufactured solution u(x) = prod_d cos(pi x_d / 2) on (0,1)^d. It is non
+// zero on the faces x_d = 0, so the Dirichlet data are inhomogeneous, and its
+// normal derivative on x_0 = 1 is non zero as well.
 template <int dim> class ExactSolution : public Function<dim> {
 public:
   static constexpr double k = 0.5 * numbers::PI;
