@@ -79,6 +79,29 @@ public:
     }
     return g;
   }
+
+  // u is an eigenfunction of the Laplacian: -delta u = dim k^2 u.
+  auto laplacian(const Point<dim> &p, const unsigned int = 0) const
+      -> double override {
+    return -dim * k * k * value(p);
+  }
+};
+
+template <int dim> class RightHandSide : public Function<dim> {
+public:
+  RightHandSide(const Coefficients<dim> &coefficients)
+      : coefficients(coefficients) {}
+
+  auto value(const Point<dim> &p, const unsigned int = 0) const
+      -> double override {
+    return -coefficients.mu * exact.laplacian(p) +
+           coefficients.beta * exact.gradient(p) +
+           coefficients.gamma * exact.value(p);
+  }
+
+private:
+  const Coefficients<dim> coefficients;
+  const ExactSolution<dim> exact;
 };
 
 enum class PreconditionerType { None, Jacobi, Multigrid };
