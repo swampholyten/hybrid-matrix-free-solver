@@ -2,8 +2,14 @@
 
 #include "cdr_problem.hpp"
 
+#include <deal.II/base/vectorization.h>
+
+#include <deal.II/lac/la_parallel_vector.h>
+
+#include <deal.II/matrix_free/fe_evaluation.h>
 #include <deal.II/matrix_free/matrix_free.h>
 #include <deal.II/matrix_free/operators.h>
+#include <deal.II/matrix_free/tools.h>
 
 using namespace dealii;
 
@@ -65,6 +71,62 @@ public:
     });
   }
 
+  // Computes and stores the inverse diagonal entries of the operator.
+  //
+  // Assembles A_ii for each locally ownd DoF by evaluating the operator agains
+  // unit basis functions, then stores 1 / A_ii inside inverse_diagonal_entries.
+  auto compute_diagonal() -> void override {
+    this->inverse_diagonal_entries =
+        std::make_shared<DiagonalMatrix<VectorType>>();
+    VectorType &inverse_diagonal = this->inverse_diagonal_entries->get_vector();
+    this->data->initialize_dof_vector(inverse_diagonal);
+
+    MatrixFreeTools::compute_diagonal<dim, fe_degree, fe_degree + 1, 1, Number,
+                                      VectorizedArray<Number>, VectorType>(
+        *this->data, inverse_diagonal, [this](FEEval &phi) {
+          phi.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+          do_quadrature_points(phi);
+          phi.integrate(EvaluationFlags::values | EvaluationFlags::gradients);
+        });
+
+    for (unsigned int i = 0; i < inverse_diagonal.locally_owned_size(); ++i) {
+      const Number d = inverse_diagonal.local_element(i);
+      inverse_diagonal.local_element(i) =
+          (std::abs(d) > 1e-10 ? Number(1.0) / d : Number(1.0));
+    }
+  }
+
 private:
+  // Applies the matrix-vector operation (destination += A * src)
+  // Delegates parallel cell-loop scheduling across MPI processes and SIMD
+  // vector lanes to deal.II.
+  auto apply_add(VectorType &destination, const VectorType &source) const
+      -> void override {
+    this->data->cell_loop(&Operator::local_apply, this, destination, source);
+  }
+
+  // Thread/SIMD worker kernel executing matrix-vector multiplication on a range
+  // of cells.
+  //
+  // Performs gather -> evaluate -> PDE quadrature kernel -> integrate ->
+  // scatter operations sequentially over the assigned cell batch.
+  auto
+  local_apply(const MatrixFree<dim, Number> &data, VectorType &destination,
+              const VectorType &source,
+              const std::pair<unsigned int, unsigned int> &cell_range) const
+      -> void {
+    FEEval phi(data);
+
+    for (unsigned int cell = cell_range.first; cell < cell_range.second;
+         ++cell) {
+      phi.reinit(cell);
+      phi.gather_evaluate(source,
+                          EvaluationFlags::values | EvaluationFlags::gradients);
+      do_quadrature_points(phi);
+      phi.integrate_scatter(
+          EvaluationFlags::values | EvaluationFlags::gradients, destination);
+    }
+  }
+
   Coefficients<dim, Number> coefficients;
 };
