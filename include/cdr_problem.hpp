@@ -24,18 +24,29 @@
 
 using namespace dealii;
 
-template <int DIM> struct Coefficients {
-  Coefficients(double mu = 1.0, double gamma = 1.0) : mu(mu), gamma(gamma) {
-    for (unsigned int d = 0; d < DIM; ++d) {
-      beta[d] = 1.0 + 0.5 * d;
+constexpr types::boundary_id neumann_boundary_id = 1;
+
+// Coefficients of	-div(mu grad u) + beta . grad u + gamma u = f.
+template <int dim, typename Number = double> struct Coefficients {
+  Coefficients(const Number mu = 1.0, const Number gamma = 1.0)
+      : mu(mu), gamma(gamma) {
+    for (unsigned int d = 0; d < dim; ++d) {
+      beta[d] = static_cast<Number>(1.0 + 0.5 * d);
+    }
+  }
+
+  template <typename OtherNumber>
+  Coefficients(const Coefficients<dim, OtherNumber> &other)
+      : mu(static_cast<Number>(other.mu)),
+        gamma(static_cast<Number>(other.gamma)) {
+    for (unsigned int d = 0; d < dim; ++d) {
+      beta[d] = static_cast<Number>(other.beta[d]);
     }
   }
 
   double mu;
-
   double gamma;
-
-  Tensor<1, DIM> beta;
+  Tensor<1, dim, Number> beta;
 };
 
 enum class PreconditionerType { None, Jacobi, Multigrid };
@@ -60,13 +71,12 @@ struct Parameters {
 
 template <int DIM, int FE_DEGREE> class CdrProblem {
 public:
+  using Number = double;
 
-	using Number = double;
+  using LevelNumber = float;
 
-	using LevelNumber = float;
-
-	using VectorType = LinearAlgebra::distributed::Vector<Number>;
-	using LevelVectorType = LinearAlgebra::distributed::Vector<LevelNumber>;
+  using VectorType = LinearAlgebra::distributed::Vector<Number>;
+  using LevelVectorType = LinearAlgebra::distributed::Vector<LevelNumber>;
 
   CdrProblem(const Parameters &parameters);
   void run();
