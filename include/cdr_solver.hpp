@@ -15,26 +15,34 @@
 #include "cdr_operator.hpp"
 #include "cdr_problem.hpp"
 
+using namespace dealii;
+
 enum class PreconditionerType { None, Jacobi, Multigrid };
 
 struct Parameters {
   unsigned int dim = 2;
-
   unsigned int degree = 2;
-
   unsigned int n_refinements = 5;
-
   unsigned int n_cycles = 1;
-
   double mu = 1.0;
-
   double gamma = 1.0;
-
   double tolerance = 1e-9;
-
   PreconditionerType preconditioner = PreconditionerType::None;
 };
 
+// Wall times of a single refinement cycle, for the scaling study.
+struct CycleTimings {
+  double setup = 0.0;
+  double rhs = 0.0;
+  double solve = 0.0;
+};
+
+struct SolveResult {
+  unsigned int n_iterations = 0;
+  double relative_residual = 0.0;
+};
+
+// Distributed matrix-free solver.
 template <int DIM, int FE_DEGREE> class CdrProblem {
 public:
   using Number = double;
