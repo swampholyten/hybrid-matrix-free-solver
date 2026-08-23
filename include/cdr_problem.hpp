@@ -103,3 +103,18 @@ private:
   const Coefficients<dim> coefficients;
   const ExactSolution<dim> exact;
 };
+
+template <int dim, typename Number, typename Callable>
+auto evaluate_lanewise(const Callable &f,
+                       const Point<dim, VectorizedArray<Number>> &p)
+    -> VectorizedArray<Number> {
+  VectorizedArray<Number> result;
+  for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+    Point<dim> q;
+    for (unsigned int d = 0; d < dim; ++d) {
+      q[d] = p[d][v];
+    }
+    result[v] = f(q);
+  }
+  return result;
+}

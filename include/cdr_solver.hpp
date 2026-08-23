@@ -16,6 +16,7 @@
 #include "cdr_operator.hpp"
 #include "cdr_problem.hpp"
 #include "mg_preconditioner.hpp"
+#include "problem_data.hpp"
 
 using namespace dealii;
 
@@ -171,4 +172,74 @@ auto CdrProblem<dim, fe_degree>::setup_system() -> void {
   }
 
   timings.setup = wall.wall_time();
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
+  TimerOutput::Scope scope(timer, "assemble rhs");
+  Timer wall;
+
+  const MatrixFree<dim, Number> &matrix_free = *system_matrix.get_matrix_free();
+  const RightHandSide<dim> right_hand_side(coefficients);
+  const ExactSolution<dim> exact_solution;
+
+  solution = 0.0;
+  constraints.distribute(solution);
+  solution.update_ghost_values();
+
+  system_rhs = 0.0;
+
+  FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(matrix_free);
+  for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell) {
+    phi.reinit(cell);
+    phi.read_dof_values_plain(solution);
+    phi.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    system_matrix.do_quadrature_points(
+        phi, -1.0, [&](const auto &phi_, const unsigned int q) {
+          return evaluate_lanewise<dim, Number>(
+              [&](const Point<dim> &p) { return right_hand_side.value(p); },
+              phi_.quadrature_point(q));
+        });
+
+    phi.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
+                          system_rhs);
+  }
+  system_rhs.compress(VectorOperation::add);
+
+  FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi_face(
+      matrix_free, true);
+  const unsigned int first_face = matrix_free.n_inner_face_batches();
+  const unsigned int last_face =
+      first_face + matrix_free.n_boundary_face_batches();
+
+  for (unsigned int face = first_face; face < last_face; ++face) {
+    if (matrix_free.get_boundary_id(face) != neumann_boundary_id) {
+      continue;
+    }
+
+    phi_face.reinit(face);
+    for (unsigned int q = 0; q < phi.n_q_points; ++q) {
+      const auto normal = phi_face.normal_vector(q);
+      const auto point = phi_face.quadrature_point(q);
+
+      VectorizedArray<Number> h;
+      for (unsigned int v = 0; v < VectorizedArray<Number>::size(); ++v) {
+        Point<dim> p;
+        Tensor<1, dim> n;
+        for (unsigned int d = 0; d < dim; ++d) {
+          p[d] = point[d][v];
+          n[d] = normal[d][v];
+        }
+        h[v] = exact_solution.gradient(p) * n;
+      }
+
+      phi_face.submit_value(coefficients.mu * h, q);
+    }
+    phi_face.integrate_scatter(EvaluationFlags::values, system_rhs);
+  }
+  system_rhs.compress(VectorOperation::add);
+
+  solution.zero_out_ghost_values();
+  timings.rhs = wall.wall_time();
 }
