@@ -49,6 +49,35 @@ template <int dim, typename Number = double> struct Coefficients {
   Tensor<1, dim, Number> beta;
 };
 
+template <int dim> class ExactSolution : public Function<dim> {
+public:
+  static constexpr double k = 0.5 * numbers::PI;
+
+  auto value(const Point<dim> &p, const unsigned int = 0) const
+      -> double override {
+    double v = 1.0;
+    for (unsigned int d = 0; d < dim; ++d) {
+      v *= std::cos(k * p[d]);
+    }
+    return v;
+  }
+
+  auto gradient(const Point<dim> &p, const unsigned int = 0) const
+      -> Tensor<1, dim> override {
+    Tensor<1, dim> g;
+    for (unsigned int i = 0; i < dim; ++i) {
+      double v = -k * std::sin(k * p[i]);
+      for (unsigned int j = 0; j < dim; ++j) {
+        if (j != i) {
+          v *= std::cos(k * p[j]);
+        }
+        g[i] = v;
+      }
+    }
+    return g;
+  }
+};
+
 enum class PreconditionerType { None, Jacobi, Multigrid };
 
 struct Parameters {
