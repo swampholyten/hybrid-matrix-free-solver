@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdlib>
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/convergence_table.h>
 #include <deal.II/base/quadrature_lib.h>
@@ -10,13 +11,15 @@
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 
+#include <deal.II/lac/precondition.h>
+#include <deal.II/lac/solver_gmres.h>
+
 #include <deal.II/numerics/vector_tools.h>
 #include <memory>
 
 #include "cdr_operator.hpp"
 #include "cdr_problem.hpp"
 #include "mg_preconditioner.hpp"
-#include "problem_data.hpp"
 
 using namespace dealii;
 
@@ -242,4 +245,49 @@ auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
 
   solution.zero_out_ghost_values();
   timings.rhs = wall.wall_time();
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::solve() -> SolveResult {
+  TimerOutput::Scope scope(timer, "solve");
+  Timer wall;
+
+  SolverControl solver_control(5000,
+                               parameters.tolerance * system_rhs.l2_norm());
+
+  typename SolverFGMRES<VectorType>::AdditionalData fgmres_data;
+  fgmres_data.max_basis_size = 50;
+  SolverFGMRES<VectorType> solver(solver_control, fgmres_data);
+
+  VectorType correction;
+  system_matrix.initialize_dof_vector(correction);
+
+  const auto solve_with = [&](const auto &preconditioner) {
+    solver.solve(system_matrix, correction, system_rhs, preconditioner);
+  };
+
+  switch (parameters.preconditioner) {
+  case PreconditionerType::None:
+    solve_with(PreconditionIdentity());
+    break;
+  case PreconditionerType::Jacobi:
+    solve_with(*system_matrix.get_matrix_diagonal_inverse());
+    break;
+  case PreconditionerType::Multigrid:
+    solve_with(multigrid.get());
+    break;
+  }
+
+  timings.solve = wall.wall_time();
+
+  VectorType residual;
+  system_matrix.initialize_dof_vector(residual);
+  system_matrix.vmult(residual, correction);
+  residual -= system_rhs;
+
+  solution += correction;
+  constraints.distribute(solution);
+
+  return {solver_control.last_step(),
+          residual.l2_norm() / system_rhs.l2_norm()};
 }
