@@ -14,6 +14,7 @@
 
 #include "cdr_operator.hpp"
 #include "cdr_problem.hpp"
+#include "mg_preconditioner.hpp"
 
 using namespace dealii;
 
@@ -27,7 +28,7 @@ struct Parameters {
   double mu = 1.0;
   double gamma = 1.0;
   double tolerance = 1e-9;
-  PreconditionerType preconditioner = PreconditionerType::None;
+  PreconditionerType preconditioner = PreconditionerType::Multigrid;
 };
 
 // Wall times of a single refinement cycle, for the scaling study.
@@ -43,54 +44,48 @@ struct SolveResult {
 };
 
 // Distributed matrix-free solver.
-template <int DIM, int FE_DEGREE> class CdrProblem {
+template <int dim, int fe_degree> class CdrProblem {
 public:
   using Number = double;
-
-  using LevelNumber = float;
-
+  using LevelNumber = float; // mixed precision on the multigrid levels (todo).
+  using SystemMatrixType = Operator<dim, fe_degree, Number>;
   using VectorType = LinearAlgebra::distributed::Vector<Number>;
-  using LevelVectorType = LinearAlgebra::distributed::Vector<LevelNumber>;
+  using Multigrid = MultigridPreconditioner<dim, fe_degree, LevelNumber>;
 
   CdrProblem(const Parameters &parameters);
-  void run();
 
-protected:
-  void setup();
+  auto run() -> void;
 
-  void assemble();
+private:
+  auto setup_system() -> void;
+  auto assemble_rhs() -> void;
+  auto solve() -> SolveResult;
+  auto benchmark_operator() const -> void;
+  auto compute_errors() const -> std::pair<double, double>;
+  auto output_results(const unsigned int cycle) const -> void;
 
-  unsigned int solve();
-
-  void setup_multigrid();
-
-  void compute_error();
-
-  void output(unsigned int cycle) const;
+  auto dirichlet_boundary_ids() const -> std::set<types::boundary_id>;
+  auto is_root() const -> bool;
+  auto run_cycle(const unsigned int cycle) -> void;
+  auto print_header() const -> void;
+  auto print_convergence_table() -> void;
 
   const Parameters parameters;
-
-  const Coefficients<DIM> coefficients;
-
-  const MPI_Comm mpi_communicator;
-
-  const unsigned int mpi_size;
-
-  const unsigned int mpi_rank;
-
+  const Coefficients<dim> coefficients;
+  const MPI_Comm communicator;
   ConditionalOStream pcout;
-
   TimerOutput timer;
-
   ConvergenceTable convergence_table;
 
-  parallel::distributed::Triangulation<DIM> mesh;
-
-  const MappingQ1<DIM> mapping;
-
-  const FE_Q<DIM> fe;
-
-  DoFHandler<DIM> dof_handler;
+  parallel::distributed::Triangulation<dim> triangulation;
+  const MappingQ1<dim> mapping;
+  const FE_Q<dim> fe;
+  DoFHandler<dim> dof_handler;
 
   AffineConstraints<Number> constraints;
+  SystemMatrixType system_matrix;
+  VectorType solution;
+  VectorType system_rhs;
+
+  CycleTimings timings;
 };
