@@ -297,6 +297,8 @@ auto CdrProblem<dim, fe_degree>::solve() -> SolveResult {
           residual.l2_norm() / system_rhs.l2_norm()};
 }
 
+// Times bare operator applications, which isolates the matrix-free cell loop
+// from the Krylov vector algebra and the multigrid.
 template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::benchmark_operator() const -> void {
   VectorType src, dst;
