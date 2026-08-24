@@ -1,5 +1,6 @@
 #pragma once
 
+#include <_ctype.h>
 #include <cstdlib>
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/convergence_table.h>
@@ -15,6 +16,7 @@
 #include <deal.II/lac/solver_gmres.h>
 
 #include <deal.II/numerics/vector_tools.h>
+#include <filesystem>
 #include <memory>
 
 #include "cdr_operator.hpp"
@@ -34,6 +36,9 @@ struct Parameters {
   double gamma = 1.0;
   double tolerance = 1e-9;
   PreconditionerType preconditioner = PreconditionerType::Multigrid;
+
+  // Number of operator applications timed by the builtin benchmark
+  unsigned int n_benchmarks_applications = 0;
 };
 
 // Wall times of a single refinement cycle, for the scaling study.
@@ -290,4 +295,54 @@ auto CdrProblem<dim, fe_degree>::solve() -> SolveResult {
 
   return {solver_control.last_step(),
           residual.l2_norm() / system_rhs.l2_norm()};
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::benchmark_operator() const -> void {
+  VectorType src, dst;
+  system_matrix.initialize_dof_vector(src);
+  system_matrix.initialize_dof_vector(dst);
+  src = 1.0;
+
+  system_matrix.vmult(dst, src); // warmup the caches
+  MPI_Barrier(communicator);
+
+  Timer wall;
+  for (unsigned int i = 0; i < parameters.n_benchmarks_applications; ++i) {
+    system_matrix.vmult(dst, src);
+  }
+
+  const double time = Utilities::MPI::max(wall.wall_time(), communicator) /
+                      parameters.n_benchmarks_applications;
+
+  if (is_root()) {
+    std::cout << "VMULT ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+              << " dofs=" << dof_handler.n_dofs() << " time=" << time
+              << " mdofs_per_s=" << dof_handler.n_dofs() / time / 1e6
+              << std::endl;
+  }
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::compute_errors() const
+    -> std::pair<double, double> {
+  const QGauss<dim> quadrature(fe_degree + 2);
+  Vector<double> cellwise_error(triangulation.n_active_cells());
+
+  const auto global_error = [&](const VectorTools::NormType norm) {
+    VectorTools::integrate_difference(mapping, dof_handler, solution,
+                                      ExactSolution<dim>(), cellwise_error,
+                                      quadrature, norm);
+    return VectorTools::compute_global_error(triangulation, cellwise_error,
+                                             norm);
+  };
+
+  solution.update_ghost_values();
+  const std::pair<double, double> errors = {
+      global_error(VectorTools::L2_norm),
+      global_error(VectorTools::H1_seminorm),
+  };
+  solution.zero_out_ghost_values();
+
+  return errors;
 }
