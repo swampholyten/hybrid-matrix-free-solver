@@ -9,14 +9,17 @@
 
 #include <deal.II/distributed/tria.h>
 
+#include <deal.II/grid/grid_generator.h>
+
 #include <deal.II/dofs/dof_handler.h>
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/lac/precondition.h>
 #include <deal.II/lac/solver_gmres.h>
 
+#include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
-#include <filesystem>
+
 #include <memory>
 
 #include "cdr_operator.hpp"
@@ -36,6 +39,8 @@ struct Parameters {
   double gamma = 1.0;
   double tolerance = 1e-9;
   PreconditionerType preconditioner = PreconditionerType::Multigrid;
+  bool write_output = false;
+  bool verbose = true;
 
   // Number of operator applications timed by the builtin benchmark
   unsigned int n_benchmarks_applications = 0;
@@ -53,7 +58,7 @@ struct SolveResult {
   double relative_residual = 0.0;
 };
 
-// Distributed matrix-free solver.
+// Distributed matrix-free CdrProblem.
 template <int dim, int fe_degree> class CdrProblem {
 public:
   using Number = double;
@@ -105,7 +110,8 @@ template <int dim, int fe_degree>
 CdrProblem<dim, fe_degree>::CdrProblem(const Parameters &parameters)
     : parameters(parameters), coefficients(parameters.mu, parameters.gamma),
       communicator(MPI_COMM_WORLD),
-      pcout(std::cout, Utilities::MPI::this_mpi_process(MPI_COMM_WORLD) == 0),
+      pcout(std::cout, parameters.verbose && Utilities::MPI::this_mpi_process(
+                                                 MPI_COMM_WORLD) == 0),
       timer(communicator, pcout, TimerOutput::never, TimerOutput::wall_times),
       triangulation(communicator,
                     Triangulation<dim>::limit_level_difference_at_vertices,
@@ -347,4 +353,115 @@ auto CdrProblem<dim, fe_degree>::compute_errors() const
   solution.zero_out_ghost_values();
 
   return errors;
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::output_results(const unsigned int cycle) const
+    -> void {
+  if (dof_handler.n_dofs() > 5e6) {
+    return;
+  }
+
+  VectorType ghosted(solution);
+  ghosted.update_ghost_values();
+
+  DataOut<dim> data_out;
+  data_out.attach_dof_handler(dof_handler);
+  data_out.add_data_vector(ghosted, "u");
+
+  Vector<double> subdomain(triangulation.n_active_cells());
+  subdomain = Utilities::MPI::this_mpi_process(communicator);
+  data_out.add_data_vector(subdomain, "rank");
+
+  data_out.build_patches(mapping, fe_degree);
+  data_out.write_vtu_with_pvtu_record(
+      "./", "solution-" + std::to_string(dim) + "d", cycle, communicator, 2);
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::print_header() const -> void {
+  pcout << "Convection-diffusion-reaction, matrix-free, " << dim << "D, Q"
+        << fe_degree << ": mu = " << coefficients.mu
+        << ", gamma = " << coefficients.gamma
+        << ", beta = " << coefficients.beta << std::endl
+        << Utilities::MPI::n_mpi_processes(communicator) << " MPI rank(s), "
+        << VectorizedArray<Number>::size() << " SIMD lanes" << std::endl;
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
+  const unsigned int n_refinements = parameters.n_refinements + cycle;
+
+  triangulation.clear();
+  GridGenerator::hyper_cube(triangulation, 0.0, 1.0, true);
+  triangulation.refine_global(n_refinements);
+
+  setup_system();
+  assemble_rhs();
+
+  if (parameters.n_benchmarks_applications > 0)
+    benchmark_operator();
+
+  const SolveResult result = solve();
+  const auto [l2_error, h1_error] = compute_errors();
+
+  if (parameters.write_output)
+    output_results(cycle);
+
+  convergence_table.add_value("cells", triangulation.n_global_active_cells());
+  convergence_table.add_value("dofs", dof_handler.n_dofs());
+  convergence_table.add_value("L2", l2_error);
+  convergence_table.add_value("H1", h1_error);
+  convergence_table.add_value("its", result.n_iterations);
+  convergence_table.add_value("res", result.relative_residual);
+  convergence_table.add_value("solve[s]", timings.solve);
+
+  pcout << "cycle " << cycle << ": " << triangulation.n_global_active_cells()
+        << " cells, " << dof_handler.n_dofs() << " dofs, "
+        << result.n_iterations << " iterations, " << timings.setup
+        << " s setup, " << timings.rhs << " s rhs, " << timings.solve
+        << " s solve" << std::endl;
+
+  if (is_root()) {
+    std::cout << "SUMMARY"
+              << " dim=" << dim << " degree=" << fe_degree
+              << " refine=" << n_refinements
+              << " ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+              << " dofs=" << dof_handler.n_dofs()
+              << " iters=" << result.n_iterations << " setup=" << timings.setup
+              << " rhs=" << timings.rhs << " solve=" << timings.solve
+              << std::endl;
+  }
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::print_convergence_table() -> void {
+  for (const std::string column : {"L2", "H1", "res"}) {
+    convergence_table.set_precision(column, 3);
+    convergence_table.set_scientific(column, true);
+  }
+  convergence_table.set_precision("solve[s]", 3);
+
+  if (parameters.n_cycles > 1) {
+    for (const std::string column : {"L2", "H1"})
+      convergence_table.evaluate_convergence_rates(
+          column, "dofs", ConvergenceTable::reduction_rate_log2, dim);
+  }
+
+  if (parameters.verbose && is_root()) {
+    std::cout << std::endl;
+    convergence_table.write_text(std::cout);
+    std::cout << std::endl;
+  }
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::run() -> void {
+  print_header();
+
+  for (unsigned int cycle = 0; cycle < parameters.n_cycles; ++cycle)
+    run_cycle(cycle);
+
+  print_convergence_table();
+  timer.print_wall_time_statistics(communicator);
 }
