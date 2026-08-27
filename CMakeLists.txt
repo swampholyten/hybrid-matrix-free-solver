@@ -15,3 +15,12 @@ add_executable(hybrid_matrix_free_solver src/main.cpp)
 deal_ii_setup_target(hybrid_matrix_free_solver)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfloat-conversion -Wmissing-braces -Wnon-virtual-dtor")
+
+enable_testing()
+
+foreach(test test_problem_data test_operator)
+  add_executable(${test} tests/${test}.cpp)
+  target_include_directories(${test} PRIVATE tests)
+  deal_ii_setup_target(${test})
+  add_test(NAME ${test} COMMAND ${test})
+endforeach()

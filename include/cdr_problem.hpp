@@ -44,8 +44,8 @@ template <int dim, typename Number = double> struct Coefficients {
     }
   }
 
-  double mu;
-  double gamma;
+  Number mu;
+  Number gamma;
   Tensor<1, dim, Number> beta;
 };
 
