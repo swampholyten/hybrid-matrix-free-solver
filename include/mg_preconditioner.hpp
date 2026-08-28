@@ -132,7 +132,6 @@ public:
   }
 
   auto get() const -> const Preconditioner & {
-    AssertThrow(preconditioner, ExcNotInitialized());
     return *preconditioner;
   }
 
