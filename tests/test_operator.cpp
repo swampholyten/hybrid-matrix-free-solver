@@ -41,8 +41,8 @@ public:
     triangulation.refine_global(n_refinements);
     dof_handler.distribute_dofs(fe);
 
-    constraints.reinit(dof_handler.locally_owned_dofs(),
-                       DoFTools::extract_locally_relevant_dofs(dof_handler));
+    constraints.reinit(
+        DoFTools::extract_locally_relevant_dofs(dof_handler));
     constraints.close();
 
     auto matrix_free = std::make_shared<MatrixFree<dim, Number>>();
@@ -86,8 +86,8 @@ auto test_matrix_free_data(TestSuite &suite) -> void {
   const auto data = matrix_free_data<2, double>(update_gradients |
                                                 update_JxW_values);
   suite.check(data.tasks_parallel_scheme ==
-                  MatrixFree<2, double>::AdditionalData::none,
-              "matrix_free_data disables the task scheduler");
+                  MatrixFree<2, double>::AdditionalData::partition_partition,
+              "matrix_free_data enables the TBB partition_partition scheduler");
   suite.check(data.mapping_update_flags ==
                   (update_gradients | update_JxW_values),
               "matrix_free_data forwards the cell update flags");

@@ -13,14 +13,15 @@
 
 using namespace dealii;
 
-// Cell-loop parallelism comes from MPI (the mesh is distributed) and from the
-// SIMD lanes of VectorizedArray. The shared memory task scheduler is left off,
-// as in step-37 from the deal.II tutorials.
+// Cell-loop parallelism is hybrid: MPI owns mesh partitions, TBB splits the
+// local cell batches, and VectorizedArray fills SIMD lanes inside a batch.
+// partition_partition is deal.II's default nested TBB scheme.
 template <int dim, typename Number>
 auto matrix_free_data(const UpdateFlags cell_flags) ->
     typename MatrixFree<dim, Number>::AdditionalData {
   typename MatrixFree<dim, Number>::AdditionalData data;
-  data.tasks_parallel_scheme = MatrixFree<dim, Number>::AdditionalData::none;
+  data.tasks_parallel_scheme =
+      MatrixFree<dim, Number>::AdditionalData::partition_partition;
   data.mapping_update_flags = cell_flags;
   return data;
 }
@@ -98,8 +99,7 @@ public:
 
 private:
   // Applies the matrix-vector operation (destination += A * src)
-  // Delegates parallel cell-loop scheduling across MPI processes and SIMD
-  // vector lanes to deal.II.
+  // Delegates cell-loop scheduling to MatrixFree (MPI + TBB + SIMD).
   auto apply_add(VectorType &destination, const VectorType &source) const
       -> void override {
     this->data->cell_loop(&Operator::local_apply, this, destination, source);

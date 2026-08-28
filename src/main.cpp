@@ -1,35 +1,38 @@
-#include <deal.II/base/conditional_ostream.h>
+#include "cdr_solver.hpp"
+
 #include <deal.II/base/utilities.h>
-#include <deal.II/distributed/tria.h>
-#include <deal.II/grid/grid_generator.h>
-#include <iostream>
+
+#include <string>
+#include <vector>
 
 using namespace dealii;
 
 int main(int argc, char *argv[]) {
-  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv);
+  Parameters parameters;
+  std::vector<char *> kept = {argv[0]};
 
-  const MPI_Comm comm = MPI_COMM_WORLD;
-  const unsigned int rank = Utilities::MPI::this_mpi_process(comm);
-  const unsigned int n_ranks = Utilities::MPI::n_mpi_processes(comm);
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--threads" && i + 1 < argc) {
+      parameters.n_threads = Utilities::string_to_int(argv[++i]);
+      continue;
+    }
+    if (arg.rfind("--threads=", 0) == 0) {
+      parameters.n_threads = Utilities::string_to_int(arg.substr(10));
+      continue;
+    }
+    kept.push_back(argv[i]);
+  }
 
-  ConditionalOStream pcout(std::cout, rank == 0);
+  int filtered_argc = static_cast<int>(kept.size());
+  char **filtered_argv = kept.data();
 
-  pcout << "========================================\n"
-        << "  deal.II version: " << DEAL_II_PACKAGE_VERSION << "\n"
-        << "  Running with " << n_ranks << " MPI process(es)\n"
-        << "========================================\n";
+  const unsigned int thread_limit =
+      parameters.n_threads == 0 ? numbers::invalid_unsigned_int
+                                : parameters.n_threads;
+  Utilities::MPI::MPI_InitFinalize mpi_initialization(
+      filtered_argc, filtered_argv, thread_limit);
 
-  // Quick sanity check
-  parallel::distributed::Triangulation<2> triangulation(comm);
-  GridGenerator::hyper_cube(triangulation, 0.0, 1.0);
-  triangulation.refine_global(2);
-
-  pcout << "Rank 0 setup mesh successfully!\n"
-        << "Total global active cells: "
-        << triangulation.n_global_active_cells() << std::endl;
-
-  // every rank report its local workload
-  std::cout << "  -> Rank " << rank << " owns "
-            << triangulation.n_locally_owned_active_cells() << " cells.\n";
+  CdrProblem<2, 2> problem(parameters);
+  problem.run();
 }

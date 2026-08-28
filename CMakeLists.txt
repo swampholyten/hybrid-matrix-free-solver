@@ -6,7 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(MPI REQUIRED)
-find_package(deal.II REQUIRED HINTS ENV{DEAL_II_DIR})
+find_package(deal.II REQUIRED
+  HINTS ${DEAL_II_DIR} $ENV{DEAL_II_DIR}
+)
 deal_ii_initialize_cached_variables()
 
 include_directories(include)
@@ -18,7 +20,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfloat-conversion -Wmissing-braces -Wno
 
 enable_testing()
 
-foreach(test test_problem_data test_operator)
+foreach(test test_problem_data test_operator test_mg_preconditioner)
   add_executable(${test} tests/${test}.cpp)
   target_include_directories(${test} PRIVATE tests)
   deal_ii_setup_target(${test})
