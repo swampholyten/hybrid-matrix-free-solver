@@ -1,9 +1,9 @@
 #pragma once
 
-#include <_ctype.h>
 #include <cstdlib>
 #include <deal.II/base/conditional_ostream.h>
 #include <deal.II/base/convergence_table.h>
+#include <deal.II/base/multithread_info.h>
 #include <deal.II/base/quadrature_lib.h>
 #include <deal.II/base/timer.h>
 
@@ -42,6 +42,9 @@ struct Parameters {
   bool write_output = false;
   bool verbose = true;
 
+  // TBB threads per MPI rank. Zero means deal.II/TBB default (all cores).
+  unsigned int n_threads = 0;
+
   // Number of operator applications timed by the builtin benchmark
   unsigned int n_benchmarks_applications = 0;
 };
@@ -62,7 +65,7 @@ struct SolveResult {
 template <int dim, int fe_degree> class CdrProblem {
 public:
   using Number = double;
-  using LevelNumber = float; // mixed precision on the multigrid levels (todo).
+  using LevelNumber = float; // mixed precision on the multigrid levels.
   using SystemMatrixType = Operator<dim, fe_degree, Number>;
   using VectorType = LinearAlgebra::distributed::Vector<Number>;
   using Multigrid = MultigridPreconditioner<dim, fe_degree, LevelNumber>;
@@ -74,6 +77,10 @@ public:
 private:
   auto setup_system() -> void;
   auto assemble_rhs() -> void;
+  auto local_assemble_rhs(
+      const MatrixFree<dim, Number> &data, VectorType &destination,
+      const VectorType &source,
+      const std::pair<unsigned int, unsigned int> &cell_range) const -> void;
   auto solve() -> SolveResult;
   auto benchmark_operator() const -> void;
   auto compute_errors() const -> std::pair<double, double>;
@@ -150,8 +157,8 @@ auto CdrProblem<dim, fe_degree>::setup_system() -> void {
   }
 
   constraints.clear();
-  constraints.reinit(dof_handler.locally_owned_dofs(),
-                     DoFTools::extract_locally_relevant_dofs(dof_handler));
+  constraints.reinit(
+      DoFTools::extract_locally_relevant_dofs(dof_handler));
 
   DoFTools::make_hanging_node_constraints(dof_handler, constraints);
   for (const types::boundary_id id : dirichlet_boundary_ids()) {
@@ -194,7 +201,6 @@ auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
   Timer wall;
 
   const MatrixFree<dim, Number> &matrix_free = *system_matrix.get_matrix_free();
-  const RightHandSide<dim> right_hand_side(coefficients);
   const ExactSolution<dim> exact_solution;
 
   solution = 0.0;
@@ -202,24 +208,8 @@ auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
   solution.update_ghost_values();
 
   system_rhs = 0.0;
-
-  FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(matrix_free);
-  for (unsigned int cell = 0; cell < matrix_free.n_cell_batches(); ++cell) {
-    phi.reinit(cell);
-    phi.read_dof_values_plain(solution);
-    phi.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
-
-    system_matrix.do_quadrature_points(
-        phi, -1.0, [&](const auto &phi_, const unsigned int q) {
-          return evaluate_lanewise<dim, Number>(
-              [&](const Point<dim> &p) { return right_hand_side.value(p); },
-              phi_.quadrature_point(q));
-        });
-
-    phi.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
-                          system_rhs);
-  }
-  system_rhs.compress(VectorOperation::add);
+  matrix_free.cell_loop(&CdrProblem::local_assemble_rhs, this, system_rhs,
+                        solution);
 
   FEFaceEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi_face(
       matrix_free, true);
@@ -233,7 +223,7 @@ auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
     }
 
     phi_face.reinit(face);
-    for (unsigned int q = 0; q < phi.n_q_points; ++q) {
+    for (unsigned int q = 0; q < phi_face.n_q_points; ++q) {
       const auto normal = phi_face.normal_vector(q);
       const auto point = phi_face.quadrature_point(q);
 
@@ -256,6 +246,31 @@ auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
 
   solution.zero_out_ghost_values();
   timings.rhs = wall.wall_time();
+}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::local_assemble_rhs(
+    const MatrixFree<dim, Number> &data, VectorType &destination,
+    const VectorType &source,
+    const std::pair<unsigned int, unsigned int> &cell_range) const -> void {
+  const RightHandSide<dim> right_hand_side(coefficients);
+  FEEvaluation<dim, fe_degree, fe_degree + 1, 1, Number> phi(data);
+
+  for (unsigned int cell = cell_range.first; cell < cell_range.second; ++cell) {
+    phi.reinit(cell);
+    phi.read_dof_values_plain(source);
+    phi.evaluate(EvaluationFlags::values | EvaluationFlags::gradients);
+
+    system_matrix.do_quadrature_points(
+        phi, -1.0, [&](const auto &phi_, const unsigned int q) {
+          return evaluate_lanewise<dim, Number>(
+              [&](const Point<dim> &p) { return right_hand_side.value(p); },
+              phi_.quadrature_point(q));
+        });
+
+    phi.integrate_scatter(EvaluationFlags::values | EvaluationFlags::gradients,
+                          destination);
+  }
 }
 
 template <int dim, int fe_degree>
@@ -385,6 +400,7 @@ auto CdrProblem<dim, fe_degree>::print_header() const -> void {
         << ", gamma = " << coefficients.gamma
         << ", beta = " << coefficients.beta << std::endl
         << Utilities::MPI::n_mpi_processes(communicator) << " MPI rank(s), "
+        << MultithreadInfo::n_threads() << " TBB thread(s), "
         << VectorizedArray<Number>::size() << " SIMD lanes" << std::endl;
 }
 
@@ -392,6 +408,9 @@ template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
   const unsigned int n_refinements = parameters.n_refinements + cycle;
 
+  // Drop MatrixFree objects that still refer to the old mesh before it is
+  // destroyed.
+  multigrid.clear();
   triangulation.clear();
   GridGenerator::hyper_cube(triangulation, 0.0, 1.0, true);
   triangulation.refine_global(n_refinements);
@@ -427,6 +446,7 @@ auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
               << " dim=" << dim << " degree=" << fe_degree
               << " refine=" << n_refinements
               << " ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+              << " threads=" << MultithreadInfo::n_threads()
               << " dofs=" << dof_handler.n_dofs()
               << " iters=" << result.n_iterations << " setup=" << timings.setup
               << " rhs=" << timings.rhs << " solve=" << timings.solve

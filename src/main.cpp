@@ -1,35 +1,59 @@
-#include <deal.II/base/conditional_ostream.h>
+#include "cdr_solver.hpp"
+
+#include <deal.II/base/multithread_info.h>
 #include <deal.II/base/utilities.h>
-#include <deal.II/distributed/tria.h>
-#include <deal.II/grid/grid_generator.h>
-#include <iostream>
+
+#include <string>
+#include <vector>
 
 using namespace dealii;
 
 int main(int argc, char *argv[]) {
-  Utilities::MPI::MPI_InitFinalize mpi_initialization(argc, argv);
+  Parameters parameters;
+  std::vector<char *> kept = {argv[0]};
 
-  const MPI_Comm comm = MPI_COMM_WORLD;
-  const unsigned int rank = Utilities::MPI::this_mpi_process(comm);
-  const unsigned int n_ranks = Utilities::MPI::n_mpi_processes(comm);
+  const auto take_int = [&](int &i) {
+    return Utilities::string_to_int(argv[++i]);
+  };
 
-  ConditionalOStream pcout(std::cout, rank == 0);
+  for (int i = 1; i < argc; ++i) {
+    const std::string arg = argv[i];
+    if (arg == "--threads") {
+      parameters.n_threads = take_int(i);
+      continue;
+    }
+    if (arg.rfind("--threads=", 0) == 0) {
+      parameters.n_threads = Utilities::string_to_int(arg.substr(10));
+      continue;
+    }
+    if (arg == "--refine") {
+      parameters.n_refinements = take_int(i);
+      continue;
+    }
+    if (arg.rfind("--refine=", 0) == 0) {
+      parameters.n_refinements = Utilities::string_to_int(arg.substr(9));
+      continue;
+    }
+    kept.push_back(argv[i]);
+  }
 
-  pcout << "========================================\n"
-        << "  deal.II version: " << DEAL_II_PACKAGE_VERSION << "\n"
-        << "  Running with " << n_ranks << " MPI process(es)\n"
-        << "========================================\n";
+  int filtered_argc = static_cast<int>(kept.size());
+  char **filtered_argv = kept.data();
 
-  // Quick sanity check
-  parallel::distributed::Triangulation<2> triangulation(comm);
-  GridGenerator::hyper_cube(triangulation, 0.0, 1.0);
-  triangulation.refine_global(2);
+  const unsigned int thread_limit =
+      parameters.n_threads == 0 ? numbers::invalid_unsigned_int
+                                : parameters.n_threads;
 
-  pcout << "Rank 0 setup mesh successfully!\n"
-        << "Total global active cells: "
-        << triangulation.n_global_active_cells() << std::endl;
+  // deal.II 9.5 calls Kokkos::initialize() before it applies the
+  // MPI_InitFinalize thread argument. Kokkos then keeps a persistent
+  // thread pool. If that pool has the same size as TBB, the two runtimes
+  // oversubscribe the cores and MatrixFree's cell_loop does not speed up.
+  // Pin Kokkos to one thread first; MPI_InitFinalize then sizes TBB.
+  MultithreadInfo::set_thread_limit(1);
 
-  // every rank report its local workload
-  std::cout << "  -> Rank " << rank << " owns "
-            << triangulation.n_locally_owned_active_cells() << " cells.\n";
+  Utilities::MPI::MPI_InitFinalize mpi_initialization(
+      filtered_argc, filtered_argv, thread_limit);
+
+  CdrProblem<2, 2> problem(parameters);
+  problem.run();
 }
