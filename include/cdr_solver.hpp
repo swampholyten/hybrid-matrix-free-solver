@@ -157,8 +157,7 @@ auto CdrProblem<dim, fe_degree>::setup_system() -> void {
   }
 
   constraints.clear();
-  constraints.reinit(
-      DoFTools::extract_locally_relevant_dofs(dof_handler));
+  constraints.reinit(DoFTools::extract_locally_relevant_dofs(dof_handler));
 
   DoFTools::make_hanging_node_constraints(dof_handler, constraints);
   for (const types::boundary_id id : dirichlet_boundary_ids()) {

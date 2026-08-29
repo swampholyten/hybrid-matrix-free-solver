@@ -13,7 +13,8 @@ using namespace dealii;
 
 namespace {
 
-template <int dim> auto zero_convection(Coefficients<dim> c) -> Coefficients<dim> {
+template <int dim>
+auto zero_convection(Coefficients<dim> c) -> Coefficients<dim> {
   c.beta = Tensor<1, dim>();
   return c;
 }
@@ -41,8 +42,7 @@ public:
     triangulation.refine_global(n_refinements);
     dof_handler.distribute_dofs(fe);
 
-    constraints.reinit(
-        DoFTools::extract_locally_relevant_dofs(dof_handler));
+    constraints.reinit(DoFTools::extract_locally_relevant_dofs(dof_handler));
     constraints.close();
 
     auto matrix_free = std::make_shared<MatrixFree<dim, Number>>();
@@ -66,7 +66,8 @@ public:
   auto varying_vector(const Number seed) const -> VectorType {
     VectorType v = vector();
     for (unsigned int i = 0; i < v.locally_owned_size(); ++i) {
-      const types::global_dof_index global = v.get_partitioner()->local_to_global(i);
+      const types::global_dof_index global =
+          v.get_partitioner()->local_to_global(i);
       v.local_element(i) = std::sin(seed * (global + 1));
     }
     return v;
@@ -83,8 +84,8 @@ public:
 };
 
 auto test_matrix_free_data(TestSuite &suite) -> void {
-  const auto data = matrix_free_data<2, double>(update_gradients |
-                                                update_JxW_values);
+  const auto data =
+      matrix_free_data<2, double>(update_gradients | update_JxW_values);
   suite.check(data.tasks_parallel_scheme ==
                   MatrixFree<2, double>::AdditionalData::partition_partition,
               "matrix_free_data enables the TBB partition_partition scheduler");
@@ -97,8 +98,8 @@ auto test_matrix_free_data(TestSuite &suite) -> void {
 // vector has to land in the kernel of either term on its own.
 template <int dim, int fe_degree>
 auto test_constants_in_kernel(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   const OperatorFixture<dim, fe_degree> diffusion(
       zero_convection(Coefficients<dim>(1.0, 0.0)), 2);
@@ -115,8 +116,8 @@ auto test_constants_in_kernel(TestSuite &suite) -> void {
 // entries sum to the measure of the unit cube.
 template <int dim, int fe_degree>
 auto test_reaction_is_the_mass_matrix(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   for (const double gamma : {1.0, 2.5}) {
     const OperatorFixture<dim, fe_degree> fixture(
@@ -132,8 +133,8 @@ auto test_reaction_is_the_mass_matrix(TestSuite &suite) -> void {
 // has to reflect that.
 template <int dim, int fe_degree>
 auto test_symmetry_without_convection(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   const OperatorFixture<dim, fe_degree> fixture(
       zero_convection(Coefficients<dim>(1.5, 0.75)), 2);
@@ -142,7 +143,8 @@ auto test_symmetry_without_convection(TestSuite &suite) -> void {
 
   const double xAy = x * fixture.apply(y);
   const double yAx = y * fixture.apply(x);
-  suite.close(xAy, yAx, 1e-10, tag + "diffusion-reaction operator is symmetric");
+  suite.close(xAy, yAx, 1e-10,
+              tag + "diffusion-reaction operator is symmetric");
   suite.check(std::abs(xAy) > 1e-8,
               tag + "symmetry test uses vectors outside the kernel");
 
@@ -158,8 +160,8 @@ auto test_symmetry_without_convection(TestSuite &suite) -> void {
 // sum of its three single-term counterparts.
 template <int dim, int fe_degree>
 auto test_terms_superpose(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   const Coefficients<dim> full(1.7, 0.9);
   const OperatorFixture<dim, fe_degree> combined(full, 2);
@@ -188,9 +190,10 @@ auto test_terms_superpose(TestSuite &suite) -> void {
               tag + "superposition test is not comparing zeros");
 }
 
-template <int dim, int fe_degree> auto test_linearity(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+template <int dim, int fe_degree>
+auto test_linearity(TestSuite &suite) -> void {
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   const OperatorFixture<dim, fe_degree> fixture(Coefficients<dim>(1.2, 0.4), 2);
   const auto x = fixture.varying_vector(0.29);
@@ -211,8 +214,8 @@ template <int dim, int fe_degree> auto test_linearity(TestSuite &suite) -> void 
 // A e_i extracted one unit vector at a time.
 template <int dim, int fe_degree>
 auto test_compute_diagonal(TestSuite &suite) -> void {
-  const std::string tag = std::to_string(dim) + "D Q" +
-                          std::to_string(fe_degree) + " ";
+  const std::string tag =
+      std::to_string(dim) + "D Q" + std::to_string(fe_degree) + " ";
 
   OperatorFixture<dim, fe_degree> fixture(Coefficients<dim>(1.3, 0.6), 2);
   fixture.op.compute_diagonal();

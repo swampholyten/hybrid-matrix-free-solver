@@ -33,8 +33,7 @@ public:
   using LevelVectorType = LinearAlgebra::distributed::Vector<LevelNumber>;
   using TransferType = MGTransferMatrixFree<dim, LevelNumber>;
   using SmootherType = PreconditionChebyshev<LevelMatrixType, LevelVectorType>;
-  using Preconditioner =
-      PreconditionMG<dim, LevelVectorType, TransferType>;
+  using Preconditioner = PreconditionMG<dim, LevelVectorType, TransferType>;
 
   auto build(const DoFHandler<dim> &dof_handler, const MappingQ1<dim> &mapping,
              const Coefficients<dim> &coefficients,
@@ -131,9 +130,7 @@ public:
     mg_constrained_dofs.clear();
   }
 
-  auto get() const -> const Preconditioner & {
-    return *preconditioner;
-  }
+  auto get() const -> const Preconditioner & { return *preconditioner; }
 
 private:
   using Smoother = mg::SmootherRelaxation<SmootherType, LevelVectorType>;

@@ -40,9 +40,9 @@ int main(int argc, char *argv[]) {
   int filtered_argc = static_cast<int>(kept.size());
   char **filtered_argv = kept.data();
 
-  const unsigned int thread_limit =
-      parameters.n_threads == 0 ? numbers::invalid_unsigned_int
-                                : parameters.n_threads;
+  const unsigned int thread_limit = parameters.n_threads == 0
+                                        ? numbers::invalid_unsigned_int
+                                        : parameters.n_threads;
 
   // deal.II 9.5 calls Kokkos::initialize() before it applies the
   // MPI_InitFinalize thread argument. Kokkos then keeps a persistent

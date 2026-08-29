@@ -31,10 +31,10 @@ public:
   using VectorType = LinearAlgebra::distributed::Vector<Number>;
 
   MGFixture(const unsigned int n_refinements)
-      : triangulation(
-            MPI_COMM_WORLD,
-            Triangulation<dim>::limit_level_difference_at_vertices,
-            parallel::distributed::Triangulation<dim>::construct_multigrid_hierarchy),
+      : triangulation(MPI_COMM_WORLD,
+                      Triangulation<dim>::limit_level_difference_at_vertices,
+                      parallel::distributed::Triangulation<
+                          dim>::construct_multigrid_hierarchy),
         fe(fe_degree), dof_handler(triangulation) {
     GridGenerator::hyper_cube(triangulation, 0.0, 1.0, true);
     triangulation.refine_global(n_refinements);
@@ -47,9 +47,9 @@ public:
     for (const types::boundary_id id : triangulation.get_boundary_ids()) {
       if (id != neumann_boundary_id) {
         dirichlet_ids.insert(id);
-        VectorTools::interpolate_boundary_values(
-            mapping, dof_handler, id, Functions::ZeroFunction<dim>(),
-            constraints);
+        VectorTools::interpolate_boundary_values(mapping, dof_handler, id,
+                                                 Functions::ZeroFunction<dim>(),
+                                                 constraints);
       }
     }
     constraints.close();
@@ -148,7 +148,8 @@ auto test_fgmres_iteration_count(TestSuite &suite,
   const unsigned int iterations = fixture.fgmres_iterations(rhs);
 
   suite.check(iterations > 0, tag + "FGMRES took at least one iteration");
-  suite.check(iterations < 25, tag + "FGMRES with MG stays under 25 iterations");
+  suite.check(iterations < 25,
+              tag + "FGMRES with MG stays under 25 iterations");
 }
 
 auto test_iterations_do_not_grow_with_refinement(TestSuite &suite) -> void {
