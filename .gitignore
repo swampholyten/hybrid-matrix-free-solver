@@ -35,3 +35,6 @@
 
 build/
 Testing/
+
+# macOS
+.DS_Store
