@@ -38,3 +38,7 @@ Testing/
 
 # macOS
 .DS_Store
+
+# Solver output
+*.vtu
+*.pvtu

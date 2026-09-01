@@ -35,6 +35,10 @@ template <int dim, typename Number = double> struct Coefficients {
     }
   }
 
+  Coefficients(const Number mu, const Number gamma,
+               const Tensor<1, dim, Number> &beta)
+      : mu(mu), gamma(gamma), beta(beta) {}
+
   template <typename OtherNumber>
   Coefficients(const Coefficients<dim, OtherNumber> &other)
       : mu(static_cast<Number>(other.mu)),

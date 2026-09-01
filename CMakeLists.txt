@@ -20,7 +20,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfloat-conversion -Wmissing-braces -Wno
 
 enable_testing()
 
-foreach(test test_problem_data test_operator test_mg_preconditioner)
+foreach(test test_problem_data test_operator test_mg_preconditioner test_parameters)
   add_executable(${test} tests/${test}.cpp)
   target_include_directories(${test} PRIVATE tests)
   deal_ii_setup_target(${test})

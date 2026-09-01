@@ -23,31 +23,11 @@
 #include <memory>
 
 #include "cdr_operator.hpp"
+#include "cdr_parameters.hpp"
 #include "cdr_problem.hpp"
 #include "mg_preconditioner.hpp"
 
 using namespace dealii;
-
-enum class PreconditionerType { None, Jacobi, Multigrid };
-
-struct Parameters {
-  unsigned int dim = 2;
-  unsigned int degree = 2;
-  unsigned int n_refinements = 5;
-  unsigned int n_cycles = 1;
-  double mu = 1.0;
-  double gamma = 1.0;
-  double tolerance = 1e-9;
-  PreconditionerType preconditioner = PreconditionerType::Multigrid;
-  bool write_output = false;
-  bool verbose = true;
-
-  // TBB threads per MPI rank. Zero means deal.II/TBB default (all cores).
-  unsigned int n_threads = 0;
-
-  // Number of operator applications timed by the builtin benchmark
-  unsigned int n_benchmarks_applications = 0;
-};
 
 // Wall times of a single refinement cycle, for the scaling study.
 struct CycleTimings {
@@ -60,6 +40,17 @@ struct SolveResult {
   unsigned int n_iterations = 0;
   double relative_residual = 0.0;
 };
+
+// Beta is stored dimension independently in the input file, so only the
+// leading `dim` components are used here.
+template <int dim>
+auto make_coefficients(const Parameters &parameters) -> Coefficients<dim> {
+  Tensor<1, dim> beta;
+  for (unsigned int d = 0; d < dim; ++d) {
+    beta[d] = parameters.beta[d];
+  }
+  return Coefficients<dim>(parameters.mu, parameters.gamma, beta);
+}
 
 // Distributed matrix-free CdrProblem.
 template <int dim, int fe_degree> class CdrProblem {
@@ -115,7 +106,7 @@ private:
 
 template <int dim, int fe_degree>
 CdrProblem<dim, fe_degree>::CdrProblem(const Parameters &parameters)
-    : parameters(parameters), coefficients(parameters.mu, parameters.gamma),
+    : parameters(parameters), coefficients(make_coefficients<dim>(parameters)),
       communicator(MPI_COMM_WORLD),
       pcout(std::cout, parameters.verbose && Utilities::MPI::this_mpi_process(
                                                  MPI_COMM_WORLD) == 0),
