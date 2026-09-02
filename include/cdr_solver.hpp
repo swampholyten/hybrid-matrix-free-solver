@@ -22,24 +22,13 @@
 
 #include <memory>
 
+#include "cdr_assembled.hpp"
 #include "cdr_operator.hpp"
 #include "cdr_parameters.hpp"
 #include "cdr_problem.hpp"
 #include "mg_preconditioner.hpp"
 
 using namespace dealii;
-
-// Wall times of a single refinement cycle, for the scaling study.
-struct CycleTimings {
-  double setup = 0.0;
-  double rhs = 0.0;
-  double solve = 0.0;
-};
-
-struct SolveResult {
-  unsigned int n_iterations = 0;
-  double relative_residual = 0.0;
-};
 
 // Beta is stored dimension independently in the input file, so only the
 // leading `dim` components are used here.
@@ -74,6 +63,8 @@ private:
       const std::pair<unsigned int, unsigned int> &cell_range) const -> void;
   auto solve() -> SolveResult;
   auto benchmark_operator() const -> void;
+  auto memory_consumption() const -> std::size_t;
+  auto is_matrix_free() const -> bool;
   auto compute_errors() const -> std::pair<double, double>;
   auto output_results(const unsigned int cycle) const -> void;
 
@@ -101,6 +92,7 @@ private:
   VectorType system_rhs;
 
   Multigrid multigrid;
+  AssembledSystem<dim, fe_degree> assembled;
   CycleTimings timings;
 };
 
@@ -116,6 +108,11 @@ CdrProblem<dim, fe_degree>::CdrProblem(const Parameters &parameters)
                     parallel::distributed::Triangulation<
                         dim>::construct_multigrid_hierarchy),
       fe(fe_degree), dof_handler(triangulation) {}
+
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::is_matrix_free() const -> bool {
+  return parameters.backend == Backend::MatrixFree;
+}
 
 template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::is_root() const -> bool {
@@ -140,7 +137,8 @@ auto CdrProblem<dim, fe_degree>::setup_system() -> void {
   Timer wall;
 
   const bool use_multigrid =
-      parameters.preconditioner == PreconditionerType::Multigrid;
+      parameters.preconditioner == PreconditionerType::Multigrid &&
+      is_matrix_free();
 
   dof_handler.distribute_dofs(fe);
   if (use_multigrid) {
@@ -156,6 +154,15 @@ auto CdrProblem<dim, fe_degree>::setup_system() -> void {
                                              ExactSolution<dim>(), constraints);
   }
   constraints.close();
+
+  if (!is_matrix_free()) {
+    assembled.setup(dof_handler, constraints, communicator);
+    solution.reinit(dof_handler.locally_owned_dofs(),
+                    DoFTools::extract_locally_relevant_dofs(dof_handler),
+                    communicator);
+    timings.setup = wall.wall_time();
+    return;
+  }
 
   auto additional_data = matrix_free_data<dim, Number>(
       update_gradients | update_JxW_values | update_quadrature_points);
@@ -189,6 +196,12 @@ template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::assemble_rhs() -> void {
   TimerOutput::Scope scope(timer, "assemble rhs");
   Timer wall;
+
+  if (!is_matrix_free()) {
+    assembled.assemble(mapping, dof_handler, constraints, coefficients);
+    timings.rhs = wall.wall_time();
+    return;
+  }
 
   const MatrixFree<dim, Number> &matrix_free = *system_matrix.get_matrix_free();
   const ExactSolution<dim> exact_solution;
@@ -268,6 +281,21 @@ auto CdrProblem<dim, fe_degree>::solve() -> SolveResult {
   TimerOutput::Scope scope(timer, "solve");
   Timer wall;
 
+  if (!is_matrix_free()) {
+    const SolveResult result = assembled.solve(parameters, constraints);
+    timings.solve = wall.wall_time();
+
+    // The error and output paths are shared, so bring the solution over into
+    // the deal.II vector they expect.
+    const auto &assembled_solution = assembled.get_solution();
+    for (const types::global_dof_index i : dof_handler.locally_owned_dofs()) {
+      solution(i) = assembled_solution(i);
+    }
+    solution.compress(VectorOperation::insert);
+
+    return result;
+  }
+
   SolverControl solver_control(5000,
                                parameters.tolerance * system_rhs.l2_norm());
 
@@ -312,6 +340,20 @@ auto CdrProblem<dim, fe_degree>::solve() -> SolveResult {
 // from the Krylov vector algebra and the multigrid.
 template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::benchmark_operator() const -> void {
+  if (!is_matrix_free()) {
+    const double time =
+        assembled.benchmark(parameters.n_benchmarks_applications, communicator);
+    if (is_root()) {
+      std::cout << "VMULT backend=matrix_based"
+                << " ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+                << " threads=" << MultithreadInfo::n_threads()
+                << " dofs=" << dof_handler.n_dofs() << " time=" << time
+                << " mdofs_per_s=" << dof_handler.n_dofs() / time / 1e6
+                << std::endl;
+    }
+    return;
+  }
+
   VectorType src, dst;
   system_matrix.initialize_dof_vector(src);
   system_matrix.initialize_dof_vector(dst);
@@ -329,7 +371,9 @@ auto CdrProblem<dim, fe_degree>::benchmark_operator() const -> void {
                       parameters.n_benchmarks_applications;
 
   if (is_root()) {
-    std::cout << "VMULT ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+    std::cout << "VMULT backend=matrix_free"
+              << " ranks=" << Utilities::MPI::n_mpi_processes(communicator)
+              << " threads=" << MultithreadInfo::n_threads()
               << " dofs=" << dof_handler.n_dofs() << " time=" << time
               << " mdofs_per_s=" << dof_handler.n_dofs() / time / 1e6
               << std::endl;
@@ -383,10 +427,25 @@ auto CdrProblem<dim, fe_degree>::output_results(const unsigned int cycle) const
       "./", "solution-" + std::to_string(dim) + "d", cycle, communicator, 2);
 }
 
+// Bytes the operator itself holds, summed over the ranks. For matrix-free
+// this is the MatrixFree bookkeeping plus the multigrid levels; for the
+// matrix-based backend it is dominated by the sparse matrix entries.
+template <int dim, int fe_degree>
+auto CdrProblem<dim, fe_degree>::memory_consumption() const -> std::size_t {
+  if (!is_matrix_free()) {
+    return assembled.memory_consumption(communicator);
+  }
+
+  const std::size_t local =
+      system_matrix.get_matrix_free()->memory_consumption() +
+      multigrid.memory_consumption();
+  return Utilities::MPI::sum(local, communicator);
+}
+
 template <int dim, int fe_degree>
 auto CdrProblem<dim, fe_degree>::print_header() const -> void {
-  pcout << "Convection-diffusion-reaction, matrix-free, " << dim << "D, Q"
-        << fe_degree << ": mu = " << coefficients.mu
+  pcout << "Convection-diffusion-reaction, " << to_string(parameters.backend)
+        << ", " << dim << "D, Q" << fe_degree << ": mu = " << coefficients.mu
         << ", gamma = " << coefficients.gamma
         << ", beta = " << coefficients.beta << std::endl
         << Utilities::MPI::n_mpi_processes(communicator) << " MPI rank(s), "
@@ -417,6 +476,14 @@ auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
   if (parameters.write_output)
     output_results(cycle);
 
+  // The timings are wall times of this rank; a scaling table needs the
+  // slowest rank, not whichever one happens to be the root.
+  timings.setup = Utilities::MPI::max(timings.setup, communicator);
+  timings.rhs = Utilities::MPI::max(timings.rhs, communicator);
+  timings.solve = Utilities::MPI::max(timings.solve, communicator);
+
+  const std::size_t memory = memory_consumption();
+
   convergence_table.add_value("cells", triangulation.n_global_active_cells());
   convergence_table.add_value("dofs", dof_handler.n_dofs());
   convergence_table.add_value("L2", l2_error);
@@ -433,6 +500,8 @@ auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
 
   if (is_root()) {
     std::cout << "SUMMARY"
+              << " backend=" << to_string(parameters.backend)
+              << " precond=" << to_string(parameters.preconditioner)
               << " dim=" << dim << " degree=" << fe_degree
               << " refine=" << n_refinements
               << " ranks=" << Utilities::MPI::n_mpi_processes(communicator)
@@ -440,7 +509,8 @@ auto CdrProblem<dim, fe_degree>::run_cycle(const unsigned int cycle) -> void {
               << " dofs=" << dof_handler.n_dofs()
               << " iters=" << result.n_iterations << " setup=" << timings.setup
               << " rhs=" << timings.rhs << " solve=" << timings.solve
-              << std::endl;
+              << " memory_mb=" << memory / 1024.0 / 1024.0 << " l2=" << l2_error
+              << " h1=" << h1_error << std::endl;
   }
 }
 

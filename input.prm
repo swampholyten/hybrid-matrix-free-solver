@@ -49,8 +49,12 @@ end
 
 
 subsection Solver
-  # FGMRES preconditioner. 'none' and 'jacobi' are the baselines the multigrid
-  # is compared against.
+  # Operator representation. 'matrix_based' assembles a sparse matrix and is
+  # the reference for the matrix-free benchmark.
+  set Backend        = matrix_free
+
+  # FGMRES preconditioner. 'multigrid' means the geometric V-cycle for the
+  # matrix-free backend and algebraic multigrid for the matrix-based one.
   set Preconditioner = multigrid
 
   # Relative residual stopping tolerance.

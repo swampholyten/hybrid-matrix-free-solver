@@ -132,6 +132,21 @@ public:
 
   auto get() const -> const Preconditioner & { return *preconditioner; }
 
+  // Bytes held by the level matrices and the transfers on this rank. Zero
+  // when the V-cycle was never built, so the caller can add it blindly.
+  auto memory_consumption() const -> std::size_t {
+    if (preconditioner == nullptr) {
+      return 0;
+    }
+
+    std::size_t bytes = mg_transfer->memory_consumption();
+    for (unsigned int level = mg_matrices.min_level();
+         level <= mg_matrices.max_level(); ++level) {
+      bytes += mg_matrices[level].get_matrix_free()->memory_consumption();
+    }
+    return bytes;
+  }
+
 private:
   using Smoother = mg::SmootherRelaxation<SmootherType, LevelVectorType>;
   using CoarseGrid = MGCoarseGridApplySmoother<LevelVectorType>;

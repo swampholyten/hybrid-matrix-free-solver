@@ -11,6 +11,20 @@ using namespace dealii;
 
 enum class PreconditionerType { None, Jacobi, Multigrid };
 
+enum class Backend { MatrixFree, MatrixBased };
+
+// Wall times of a single refinement cycle, for the scaling study.
+struct CycleTimings {
+  double setup = 0.0;
+  double rhs = 0.0;
+  double solve = 0.0;
+};
+
+struct SolveResult {
+  unsigned int n_iterations = 0;
+  double relative_residual = 0.0;
+};
+
 // Every knob of a run, populated from a .prm input file. The defaults below
 // are the ones written by --generate, so a generated file always reproduces
 // the behaviour of running with no input file at all.
@@ -29,6 +43,7 @@ struct Parameters {
   unsigned int n_cycles = 1;
 
   // Solver
+  Backend backend = Backend::MatrixFree;
   PreconditionerType preconditioner = PreconditionerType::Multigrid;
   double tolerance = 1e-9;
 
@@ -46,6 +61,18 @@ struct Parameters {
   auto declare(ParameterHandler &prm) -> void;
   auto validate() const -> void;
 };
+
+inline auto to_backend(const std::string &name) -> Backend {
+  if (name == "matrix_free")
+    return Backend::MatrixFree;
+  if (name == "matrix_based")
+    return Backend::MatrixBased;
+  throw std::runtime_error("unknown backend '" + name + "'");
+}
+
+inline auto to_string(const Backend backend) -> std::string {
+  return backend == Backend::MatrixFree ? "matrix_free" : "matrix_based";
+}
 
 inline auto to_preconditioner(const std::string &name) -> PreconditionerType {
   if (name == "none")
@@ -104,11 +131,21 @@ inline auto Parameters::declare(ParameterHandler &prm) -> void {
 
   prm.enter_subsection("Solver");
   {
+    prm.declare_entry("Backend", to_string(backend),
+                      Patterns::Selection("matrix_free|matrix_based"),
+                      "Operator representation. 'matrix_based' assembles a "
+                      "sparse matrix and is the reference for the "
+                      "matrix-free benchmark.");
+    prm.add_action("Backend", [this](const std::string &value) {
+      backend = to_backend(value);
+    });
+
     // Held as an enum, so the action converts instead of add_parameter.
     prm.declare_entry("Preconditioner", to_string(preconditioner),
                       Patterns::Selection("none|jacobi|multigrid"),
-                      "FGMRES preconditioner. 'none' and 'jacobi' are the "
-                      "baselines the multigrid is compared against.");
+                      "FGMRES preconditioner. 'multigrid' means the "
+                      "geometric V-cycle for the matrix-free backend and "
+                      "algebraic multigrid for the matrix-based one.");
     prm.add_action("Preconditioner", [this](const std::string &value) {
       preconditioner = to_preconditioner(value);
     });
