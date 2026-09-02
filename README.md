@@ -54,6 +54,16 @@ times. Setting `Output/Benchmark applications` to a non-zero value adds a
 `VMULT` line timing bare operator applications, isolated from the Krylov and
 multigrid work.
 
+## Benchmarks
+
+`scripts/benchmark.sh` runs the four suites of the study and writes one CSV per
+suite into `results/`: convergence of both backends, matrix-based against
+matrix-free, MPI strong scaling, and the hybrid rank/thread grid.
+
+`Solver/Backend` picks the operator representation: `matrix_free` or
+`matrix_based`, the latter assembling a Trilinos sparse matrix from the same
+bilinear form as the reference for the comparison.
+
 ## Testing
 
 ```bash
@@ -68,8 +78,12 @@ include/    cdr_problem     problem data and manufactured solution
             mg_preconditioner  geometric multigrid V-cycle
             cdr_solver      the FGMRES driver and the convergence table
             cdr_parameters  the parameter file
+            cdr_assembled   matrix-based reference solver
             cli             the command line
 src/        main.cpp
 tests/
+scripts/    benchmark.sh    the benchmark sweeps
+results/    *.csv           measured data
+doc/        report.pdf      the report
 input.prm   generated default parameter file
 ```
